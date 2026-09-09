@@ -1,0 +1,5 @@
+class,n,mean_LST_C,median_LST_C
+water,8575,36.129074,35.07419
+vegetation,53987,41.438618,40.989082
+urban,92966,45.344265,45.049683
+low_density_bare,51342,43.73996,43.75638

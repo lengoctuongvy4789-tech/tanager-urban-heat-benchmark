@@ -1,0 +1,12 @@
+.venv/
+.DS_Store
+**/__pycache__/
+**/.ipynb_checkpoints/
+
+# Raw imagery is reproducible through the download script and too large for GitHub.
+data/tanager/
+data/landsat/
+
+# Google Drive pointer files contain account metadata, not document contents.
+*.gdoc
+
