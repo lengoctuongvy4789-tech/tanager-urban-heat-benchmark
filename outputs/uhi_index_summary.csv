@@ -1,0 +1,8 @@
+,value
+valid_pixels,206870.0
+vegetation_reference_pixels,59727.0
+vegetation_NDVI_threshold,0.35
+vegetation_reference_mean_LST_C,41.71944808959961
+scene_mean_LST_C,43.54486083984375
+scene_mean_minus_vegetation_C,1.8254120349884033
+hotspot_threshold_P90_C,48.40959167480469

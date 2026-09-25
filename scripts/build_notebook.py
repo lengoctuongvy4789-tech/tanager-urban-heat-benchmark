@@ -21,22 +21,21 @@ def code(text: str) -> None:
 
 
 md(r"""
-# Bốn phương pháp HSI–MSI cho vật liệu đô thị và LST
+# Ba phương pháp HSI–MSI cho vật liệu đô thị và LST
 
-Notebook có hai thí nghiệm nối tiếp nhau và dùng cùng bốn cách biểu diễn phổ:
+Notebook có hai thí nghiệm nối tiếp nhau và dùng cùng ba cách biểu diễn phổ:
 
 | Mã | Cấu hình | Ý nghĩa |
 |---|---|---|
 | **M1** | MSI baseline | band rộng và chỉ số phổ |
 | **M2** | Full HSI | toàn bộ band HSI hợp lệ |
-| **M3** | RF-selected HSI | 10 band có relevance cao và ít dư thừa, chọn trong từng training fold |
-| **M4** | HSI unmixing | MSI + MNF components + FCLS abundance fractions |
+| **M3** | HSI unmixing | MSI + MNF components + FCLS abundance fractions |
 
-**Phần A — Pavia University:** dùng nhãn vật liệu/lớp phủ để kiểm tra bốn cấu hình bằng bài toán phân loại.
+**Phần A — Pavia University:** dùng nhãn vật liệu/lớp phủ để kiểm tra ba cấu hình bằng bài toán phân loại.
 
-**Phần B — Tanager + Landsat:** dùng cùng bốn cấu hình để dự đoán Landsat LST và phát hiện hotspot. LST là target chung cho cả M1–M4 trong phần này.
+**Phần B — Tanager + Landsat:** dùng cùng ba cấu hình để dự đoán Landsat LST và phát hiện hotspot. LST là target chung cho cả M1–M3 trong phần này.
 
-Band selection được fit lại chỉ trên training set của từng fold để tránh dùng thông tin từ test set. M3 là bản triển khai thực dụng của ý tưởng RF-based band selection trong Le Bris et al.: Random Forest tạo relevance score, sau đó thuật toán greedy phạt các band tương quan cao để tránh chọn nhiều band gần như trùng nhau. Paper gốc dùng SFFS và genetic algorithm để tìm kiếm sâu hơn.
+Paper Brazil chỉ cung cấp cách tính và diễn giải LST/UHI. Notebook không tái lập object segmentation hay quy trình phân lớp bốn bề mặt của paper đó.
 """)
 
 md(r"""
@@ -57,12 +56,7 @@ import rasterio
 from rasterio.warp import reproject, Resampling
 from scipy.io import loadmat
 from sklearn.cluster import KMeans
-from sklearn.ensemble import (
-    HistGradientBoostingClassifier,
-    HistGradientBoostingRegressor,
-    RandomForestClassifier,
-    RandomForestRegressor,
-)
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.model_selection import GroupKFold
 from sklearn.metrics import (
     accuracy_score,
@@ -73,7 +67,6 @@ from sklearn.metrics import (
     mean_squared_error,
     r2_score,
 )
-from skimage.segmentation import slic
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 np.random.seed(42)
@@ -99,10 +92,8 @@ PAVIA_GT_FILE = PAVIA_DIR / "PaviaU_gt.mat"
 QUICK_RUN = True              # False cho kết quả cuối của report
 N_MNF = 16
 N_ENDMEMBERS = 7
-N_SELECTED_BANDS = 10
 CV_FOLDS = 3 if QUICK_RUN else 5
 MODEL_ITERATIONS = 140 if QUICK_RUN else 250
-RF_SELECTOR_TREES = 60 if QUICK_RUN else 200
 TRAIN_SAMPLES = 30_000 if QUICK_RUN else 60_000
 NOISE_SAMPLES = 20_000 if QUICK_RUN else 40_000
 PPI_SAMPLES = 10_000 if QUICK_RUN else 20_000
@@ -126,7 +117,7 @@ md(r"""
 
 Pavia University có 103 band VNIR và chín lớp đô thị. Benchmark này trả lời câu hỏi **HSI có phân biệt vật liệu/lớp phủ tốt hơn MSI không**. Nó không có thermal/LST, vì vậy LST chỉ xuất hiện ở Phần B.
 
-M1 được tạo trực tiếp từ Pavia HSI thành bốn band rộng blue–green–red–NIR cộng NDVI. M2 dùng 103 band. M3 chọn 10 band trong từng training fold. M4 dùng MNF/PPI/FCLS không giám sát rồi đưa các fractions cùng MNF và MSI vào cùng classifier.
+M1 được tạo trực tiếp từ Pavia HSI thành bốn band rộng blue–green–red–NIR cộng NDVI. M2 dùng 103 band. M3 dùng MNF/PPI/FCLS không giám sát rồi đưa các fractions cùng MNF và MSI vào cùng classifier.
 """)
 
 code(r"""
@@ -178,7 +169,7 @@ axes[1].set_title("Ground truth — 9 lớp"); axes[1].axis("off")
 plt.tight_layout();
 """)
 
-md("### A1. Tạo MNF, PPI và FCLS features cho M4")
+md("### A1. Tạo MNF, PPI và FCLS features cho M3")
 
 code(r"""
 def fit_mnf_generic(X, differences, n_components):
@@ -257,48 +248,21 @@ ax.legend(ncol=3);
 """)
 
 md(r"""
-### A2. Spatial cross-validation cho bốn cấu hình
+### A2. Spatial cross-validation cho ba cấu hình
 
-Các block 32×32 pixel giữ các pixel lân cận trong cùng fold. M1, M2 và M4 dùng feature cố định. Với M3, Random Forest chỉ xem training fold, xếp hạng các band và chọn 10 band quan trọng nhất; classifier cuối vẫn giống ba cấu hình còn lại. `QUICK_RUN` dùng ba folds, chế độ final dùng năm folds.
+Các block 32×32 pixel giữ các pixel lân cận trong cùng fold. Ba cấu hình dùng cùng classifier và cùng spatial folds. `QUICK_RUN` dùng ba folds, chế độ final dùng năm folds.
 """)
 
 code(r"""
 PAVIA_BLOCK_PX = 32
 pavia_groups = (pr_all // PAVIA_BLOCK_PX) * (pavia_cube.shape[1] // PAVIA_BLOCK_PX + 1) + (pc_all // PAVIA_BLOCK_PX)
 
-def relevance_redundancy_subset(X_train, importances, k):
-    '''Greedy relevance/redundancy selection from the strongest RF candidates.'''
-    pool_size = min(X_train.shape[1], max(40, 5 * k))
-    candidates = np.argsort(importances)[-pool_size:][::-1]
-    corr = np.abs(np.corrcoef(X_train[:, candidates], rowvar=False))
-    corr = np.nan_to_num(corr, nan=1.0)
-    chosen_local = [0]
-    while len(chosen_local) < min(k, len(candidates)):
-        remaining = [i for i in range(len(candidates)) if i not in chosen_local]
-        redundancy = corr[np.ix_(remaining, chosen_local)].max(axis=1)
-        relevance = importances[candidates[remaining]]
-        score = relevance * (0.10 + 0.90 * (1 - redundancy))
-        chosen_local.append(remaining[int(np.argmax(score))])
-    return candidates[chosen_local]
-
-def rf_select_classification_bands(X_train, y_train, k, seed):
-    model = RandomForestClassifier(
-        n_estimators=RF_SELECTOR_TREES, max_features="sqrt", min_samples_leaf=2,
-        class_weight="balanced_subsample", n_jobs=-1, random_state=seed,
-    )
-    model.fit(X_train, y_train)
-    return relevance_redundancy_subset(X_train, model.feature_importances_, k)
-
-def run_pavia_cv(X, name, select_bands=False):
+def run_pavia_cv(X, name):
     cv = GroupKFold(n_splits=CV_FOLDS)
-    records, chosen_rows = [], []
+    records = []
     oof = np.zeros_like(pavia_y)
     for fold, (tr, te) in enumerate(cv.split(X, pavia_y, pavia_groups), 1):
         Xtr, Xte = X[tr], X[te]
-        if select_bands:
-            selected = rf_select_classification_bands(Xtr, pavia_y[tr], N_SELECTED_BANDS, 100 + fold)
-            Xtr, Xte = Xtr[:, selected], Xte[:, selected]
-            chosen_rows.extend({"fold": fold, "band_index": int(i), "wavelength_nm": float(pavia_wl[i])} for i in selected)
         model = HistGradientBoostingClassifier(
             max_iter=MODEL_ITERATIONS, learning_rate=.07, max_leaf_nodes=31,
             l2_regularization=1, random_state=42,
@@ -312,28 +276,25 @@ def run_pavia_cv(X, name, select_bands=False):
             "macro_F1": f1_score(pavia_y[te], pred, labels=list(PAVIA_LABELS), average="macro", zero_division=0),
             "kappa": cohen_kappa_score(pavia_y[te], pred),
         })
-    return pd.DataFrame(records), oof, pd.DataFrame(chosen_rows)
+    return pd.DataFrame(records), oof
 
 pavia_methods = {
     "M1_MSI": pavia_X_msi,
     "M2_Full_HSI": pavia_X_full,
-    "M4_HSI_Unmixing": pavia_X_unmix,
+    "M3_HSI_Unmixing": pavia_X_unmix,
 }
 pavia_metric_parts, pavia_oof = [], {}
 for name, X in pavia_methods.items():
-    result, pred, _ = run_pavia_cv(X, name)
+    result, pred = run_pavia_cv(X, name)
     pavia_metric_parts.append(result); pavia_oof[name] = pred
 
-result, pred, pavia_selected = run_pavia_cv(pavia_X_full, "M3_Selected_HSI", select_bands=True)
-pavia_metric_parts.append(result); pavia_oof["M3_Selected_HSI"] = pred
 pavia_metrics = pd.concat(pavia_metric_parts, ignore_index=True)
 pavia_summary = pavia_metrics.groupby("method")[["accuracy", "macro_F1", "kappa"]].agg(["mean", "std"])
 display(pavia_summary.round(3))
 
-pavia_metrics.to_csv(OUT_DIR / "pavia_four_method_metrics.csv", index=False)
-pavia_selected.to_csv(OUT_DIR / "pavia_selected_bands.csv", index=False)
+pavia_metrics.to_csv(OUT_DIR / "pavia_three_method_metrics.csv", index=False)
 
-fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 for ax, (name, pred) in zip(axes.ravel(), pavia_oof.items()):
     cm = confusion_matrix(pavia_y, pred, labels=list(PAVIA_LABELS), normalize="true")
     im = ax.imshow(cm, vmin=0, vmax=1, cmap="Blues")
@@ -342,13 +303,6 @@ for ax, (name, pred) in zip(axes.ravel(), pavia_oof.items()):
     ax.set_xticklabels(range(1, 10)); ax.set_yticklabels(range(1, 10))
 fig.colorbar(im, ax=axes.ravel().tolist(), shrink=.65, label="Row-normalized rate")
 plt.show();
-
-display(
-    pavia_selected.groupby("band_index")
-    .agg(wavelength_nm=("wavelength_nm", "first"), selected_folds=("fold", "nunique"))
-    .sort_values(["selected_folds", "wavelength_nm"], ascending=[False, True])
-    .head(20)
-)
 """)
 
 md("## Phần B — Tanager HSI và Landsat LST")
@@ -638,35 +592,7 @@ plt.tight_layout();
 """)
 
 md(r"""
-### B7. Baseline bốn lớp kiểu Brazil và object segmentation
-
-SLIC tạo khoảng 1.200 object từ MSI-sim. Mỗi object được gán một trong bốn lớp: water, vegetation, urban, low-density/bare bằng trung bình NDVI/NDBI/MNDWI. Đây là baseline không giám sát; cần polygon độc lập nếu muốn báo cáo accuracy phân loại.
-""")
-
-code(r"""
-rgb_sim=np.stack([B4,B3,B2],axis=-1)
-lo=np.nanpercentile(rgb_sim[valid],2,axis=0); hi=np.nanpercentile(rgb_sim[valid],98,axis=0)
-rgb_scaled=np.clip((rgb_sim-lo)/(hi-lo+1e-9),0,1); rgb_scaled[~valid]=0
-segments=slic(rgb_scaled,n_segments=1200,compactness=10,sigma=1,start_label=0,mask=valid,channel_axis=-1)
-
-classes=np.full((height,width),255,np.uint8)
-CLASS_NAMES={0:"water",1:"vegetation",2:"urban",3:"low_density_bare"}
-for seg in np.unique(segments[valid]):
-    m=(segments==seg)&valid
-    vi,bi,wi=np.nanmean(ndvi[m]),np.nanmean(ndbi[m]),np.nanmean(mndwi[m])
-    if wi>0.05 and wi>vi: cls=0
-    elif vi>0.35: cls=1
-    elif bi>0: cls=2
-    else: cls=3
-    classes[m]=cls
-
-fig,ax=plt.subplots(figsize=(10,8)); im=ax.imshow(np.ma.masked_where(classes==255,classes),cmap="tab10",vmin=0,vmax=9)
-ax.set_title("Brazil-style four classes (object-based baseline)"); ax.axis("off")
-display(pd.Series({CLASS_NAMES[k]:int((classes==k).sum()) for k in CLASS_NAMES},name="pixels"))
-""")
-
-md(r"""
-### B8. Landsat LST: QA, scale và đồng đăng ký
+### B7. Landsat LST: QA, scale và đồng đăng ký
 
 `QA_PIXEL` loại fill, dilated cloud, cirrus, cloud, cloud shadow và snow. `QA_RADSAT` loại pixel bão hòa. Công thức Collection 2 Level-2: `K = DN × 0.00341802 + 149`; sau đó đổi sang °C. Hai rows được warp trực tiếp về lưới Tanager và lấy trung bình nơi chồng lấn.
 """)
@@ -706,37 +632,43 @@ fig,ax=plt.subplots(figsize=(10,8)); lo,hi=np.nanpercentile(lst_c,[2,98]); im=ax
 ax.set_title("Landsat 8 LST (°C) — 2025-04-09"); ax.axis("off"); plt.colorbar(im,ax=ax,shrink=.75,label="°C");
 """)
 
-md("### B9. Chỉ số UHI theo pipeline Brazil")
+md(r"""
+### B8. Chỉ số UHI tham khảo từ paper Brazil
+
+Notebook chỉ giữ logic tính và diễn giải nhiệt: dùng pixel thực vật có `NDVI ≥ 0.35` làm bề mặt tham chiếu, sau đó tính `ΔLST = LST − mean(LST vegetation)`. Không chạy SLIC và không phân lớp water/vegetation/urban/bare theo pipeline Brazil.
+""")
 
 code(r"""
-uhi_rows=[]
-for k,name in CLASS_NAMES.items():
-    vals=lst_c[common&(classes==k)]
-    uhi_rows.append({"class":name,"n":len(vals),"mean_LST_C":np.nanmean(vals),"median_LST_C":np.nanmedian(vals)})
-uhi_table=pd.DataFrame(uhi_rows)
-display(uhi_table.round(3))
-means=uhi_table.set_index("class")["mean_LST_C"]
-summary={
-    "UHI_urban_minus_vegetation_C":means["urban"]-means["vegetation"],
-    "UHI_urban_minus_low_density_C":means["urban"]-means["low_density_bare"],
-}
-display(pd.Series(summary).round(3))
-
-veg_mean=means["vegetation"]
+VEGETATION_NDVI_THRESHOLD=0.35
+vegetation_reference=common&(ndvi>=VEGETATION_NDVI_THRESHOLD)&(mndwi<0.1)
+assert vegetation_reference.sum()>100, "Quá ít pixel vegetation reference; kiểm tra NDVI threshold"
+veg_mean=float(np.nanmean(lst_c[vegetation_reference]))
 delta_lst=lst_c-veg_mean
+hotspot_threshold=float(np.nanquantile(lst_c[common],0.90))
+observed_hotspot=common&(lst_c>=hotspot_threshold)
+
+uhi_summary=pd.Series({
+    "valid_pixels":int(common.sum()),
+    "vegetation_reference_pixels":int(vegetation_reference.sum()),
+    "vegetation_NDVI_threshold":VEGETATION_NDVI_THRESHOLD,
+    "vegetation_reference_mean_LST_C":veg_mean,
+    "scene_mean_LST_C":float(np.nanmean(lst_c[common])),
+    "scene_mean_minus_vegetation_C":float(np.nanmean(delta_lst[common])),
+    "hotspot_threshold_P90_C":hotspot_threshold,
+})
+display(uhi_summary.round(3))
 """)
 
 md(r"""
-### B10. Bốn phương pháp dự báo LST với spatial cross-validation
+### B9. Ba phương pháp dự báo LST với spatial cross-validation
 
 Tất cả phương pháp dùng **cùng Landsat LST target**, cùng tập pixel, block không gian 1 km và cùng `HistGradientBoostingRegressor`. `QUICK_RUN` dùng tối đa 30.000 pixel và ba folds; chế độ final dùng tối đa 120.000 pixel và năm folds.
 
 - **M1 — MSI:** sáu band OLI giả lập + NDVI/NDBI/MNDWI.
 - **M2 — Full HSI:** toàn bộ band Tanager hợp lệ.
-- **M3 — Selected HSI:** 10 band do Random Forest regression chọn riêng trong training fold.
-- **M4 — HSI unmixing:** M1 + 16 MNF components + 7 FCLS fractions.
+- **M3 — HSI unmixing:** M1 + 16 MNF components + 7 FCLS fractions.
 
-Metrics gồm R², RMSE, MAE và F1 phát hiện 10% pixel nóng nhất. Vì M3 chọn band bên trong từng fold, test fold không tham gia band selection.
+Metrics gồm R², RMSE, MAE và F1 phát hiện 10% pixel nóng nhất.
 """)
 
 code(r"""
@@ -755,22 +687,10 @@ block_px=max(1,round(SPATIAL_BLOCK_M/abs(target_transform.a)))
 groups=(rows//block_px)*(width//block_px+1)+(cols//block_px)
 print("Samples:",len(y),"| spatial groups:",len(np.unique(groups)),"| block pixels:",block_px)
 
-def rf_select_regression_bands(X_train, y_train, k, seed):
-    model=RandomForestRegressor(
-        n_estimators=RF_SELECTOR_TREES,max_features="sqrt",min_samples_leaf=3,
-        max_samples=.7,n_jobs=-1,random_state=seed,
-    )
-    model.fit(X_train,y_train)
-    return relevance_redundancy_subset(X_train,model.feature_importances_,k)
-
-def run_cv(X,name,select_bands=False):
-    records=[]; selected_rows=[]; cv=GroupKFold(n_splits=CV_FOLDS)
+def run_cv(X,name):
+    records=[]; cv=GroupKFold(n_splits=CV_FOLDS)
     for fold,(tr,te) in enumerate(cv.split(X,y,groups),1):
         Xtr,Xte=X[tr],X[te]
-        if select_bands:
-            selected=rf_select_regression_bands(Xtr,y[tr],N_SELECTED_BANDS,200+fold)
-            Xtr,Xte=Xtr[:,selected],Xte[:,selected]
-            selected_rows.extend({"fold":fold,"band_index":int(i),"wavelength_nm":float(wl[i])} for i in selected)
         model=HistGradientBoostingRegressor(max_iter=MODEL_ITERATIONS,learning_rate=.06,max_leaf_nodes=31,l2_regularization=1,random_state=42)
         model.fit(Xtr,y[tr]); pred=model.predict(Xte)
         threshold=np.quantile(y[tr],.90)
@@ -778,21 +698,18 @@ def run_cv(X,name,select_bands=False):
                         "RMSE_C":mean_squared_error(y[te],pred)**.5,
                         "MAE_C":mean_absolute_error(y[te],pred),
                         "Hotspot_F1":f1_score(y[te]>=threshold,pred>=threshold)})
-    return pd.DataFrame(records),pd.DataFrame(selected_rows)
+    return pd.DataFrame(records)
 
 metric_parts=[]
 for X,name in [
     (X_msi,"M1_MSI"),
     (X_full_hsi,"M2_Full_HSI"),
-    (X_unmix,"M4_HSI_Unmixing"),
+    (X_unmix,"M3_HSI_Unmixing"),
 ]:
-    result,_=run_cv(X,name); metric_parts.append(result)
-result,tanager_selected=run_cv(X_full_hsi,"M3_Selected_HSI",select_bands=True)
-metric_parts.append(result)
+    metric_parts.append(run_cv(X,name))
 metrics=pd.concat(metric_parts,ignore_index=True)
 display(metrics.groupby("features").agg(["mean","std"]).round(3))
 metrics.to_csv(OUT_DIR/"spatial_cv_metrics.csv",index=False)
-tanager_selected.to_csv(OUT_DIR/"tanager_selected_bands.csv",index=False)
 """)
 
 code(r"""
@@ -803,19 +720,12 @@ for metric in ["R2","Hotspot_F1"]:
 comparison["RMSE_reduction_vs_M1_C"]=summary_metrics.loc["M1_MSI","RMSE_C"]-comparison["RMSE_C"]
 display(comparison.round(3))
 
-ax=summary_metrics[["RMSE_C","MAE_C"]].plot.bar(figsize=(10,4),rot=15,title="Four-method spatial CV error")
+ax=summary_metrics[["RMSE_C","MAE_C"]].plot.bar(figsize=(10,4),rot=15,title="Three-method spatial CV error")
 ax.set_ylabel("°C"); plt.tight_layout();
-
-display(
-    tanager_selected.groupby("band_index")
-    .agg(wavelength_nm=("wavelength_nm","first"),selected_folds=("fold","nunique"))
-    .sort_values(["selected_folds","wavelength_nm"],ascending=[False,True])
-    .head(25)
-)
 """)
 
 md(r"""
-### B11. Xuất raster và bảng kết quả
+### B10. Xuất raster và bảng kết quả
 
 Các raster giữ đúng `EPSG:32648`, transform và kích thước của Tanager. Tệp float dùng `NaN` làm nodata; lớp dùng 255.
 """)
@@ -839,10 +749,9 @@ write_float_tif(OUT_DIR/"mnf_16.tif",mnf_map,[f"MNF_{i+1}" for i in range(N_MNF)
 write_float_tif(OUT_DIR/"endmember_fractions.tif",fractions,[f"E{i}_fraction" for i in range(N_ENDMEMBERS)])
 write_float_tif(OUT_DIR/"landsat_lst_c.tif",lst_c,["LST_C"])
 write_float_tif(OUT_DIR/"delta_lst_from_vegetation.tif",delta_lst,["Delta_LST_C"])
-write_byte_tif(OUT_DIR/"brazil_four_classes.tif",classes,"Brazil_four_classes")
 write_byte_tif(OUT_DIR/"sam_class.tif",sam_class,"SAM_class")
 em_table.to_csv(OUT_DIR/"endmember_summary.csv",index=False)
-uhi_table.to_csv(OUT_DIR/"uhi_class_summary.csv",index=False)
+uhi_summary.rename("value").to_csv(OUT_DIR/"uhi_index_summary.csv",header=True)
 print("Đã ghi:")
 for p in sorted(OUT_DIR.iterdir()): print(" -",p.name)
 """)
@@ -852,10 +761,9 @@ md(r"""
 
 1. Dùng Pavia để kết luận phương pháp nào phân biệt vật liệu/lớp phủ tốt hơn qua accuracy, macro-F1 và Kappa.
 2. Dùng Tanager–Landsat để kết luận phương pháp nào dự đoán LST và hotspot tốt hơn qua R², RMSE, MAE và hotspot F1.
-3. M3 cho biết có thể giữ bao nhiêu lợi ích của HSI với chỉ 10 band. Tần suất band được chọn qua năm folds cho biết kết quả có ổn định hay không.
-4. M4 cho biết MNF và abundance fractions có cung cấp tín hiệu dễ giải thích hơn phổ thô hay không.
+3. M3 cho biết MNF và abundance fractions có cung cấp tín hiệu dễ giải thích hơn phổ thô hay không.
 
-Không chuyển classifier Pavia trực tiếp sang Tanager. Ta chuyển **experiment protocol** và bốn cách tạo feature; model được fit lại cho target tương ứng. Pavia không có LST, còn Tanager không có nhãn vật liệu. LST Landsat lệch Tanager hai ngày, nên phần B là proof-of-concept và chưa loại bỏ hoàn toàn ảnh hưởng thời tiết/thời gian.
+Không chuyển classifier Pavia trực tiếp sang Tanager. Ta chuyển **experiment protocol** và ba cách tạo feature; model được fit lại cho target tương ứng. Pavia không có LST, còn Tanager không có nhãn vật liệu. LST Landsat lệch Tanager hai ngày, nên phần B là proof-of-concept và chưa loại bỏ hoàn toàn ảnh hưởng thời tiết/thời gian.
 """)
 
 nb["cells"] = cells
