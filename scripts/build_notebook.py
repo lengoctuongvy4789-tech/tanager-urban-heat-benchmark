@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the reproducible VS Code notebook for the Tanager/Landsat experiment."""
+"""Build the reproducible four-method HSI/MSI benchmark notebook."""
 
 from pathlib import Path
 
@@ -21,21 +21,28 @@ def code(text: str) -> None:
 
 
 md(r"""
-# Tanager hyperspectral vs. Landsat multispectral cho đảo nhiệt đô thị
+# Bốn phương pháp HSI–MSI cho vật liệu đô thị và LST
 
-Notebook này chạy một benchmark có kiểm soát trên TP.HCM–Thủ Đức:
+Notebook có hai thí nghiệm nối tiếp nhau và dùng cùng bốn cách biểu diễn phổ:
 
-1. **HSI-full:** phổ phản xạ Tanager, giữ các band tốt ngoài vùng hấp thụ khí quyển.
-2. **MSI-sim:** tích phân chính phổ Tanager bằng Relative Spectral Response (RSR) của Landsat 8 OLI.
-3. **Nhiệt độ mục tiêu:** Landsat 8 Collection 2 Level-2 `ST_B10`, chụp sau Tanager 2 ngày.
+| Mã | Cấu hình | Ý nghĩa |
+|---|---|---|
+| **M1** | MSI baseline | band rộng và chỉ số phổ |
+| **M2** | Full HSI | toàn bộ band HSI hợp lệ |
+| **M3** | RF-selected HSI | 10 band có relevance cao và ít dư thừa, chọn trong từng training fold |
+| **M4** | HSI unmixing | MSI + MNF components + FCLS abundance fractions |
 
-Thiết kế HSI-full/MSI-sim giữ nguyên thời điểm, pixel và khí quyển, nên so sánh tập trung vào lượng thông tin phổ. Phần vật liệu là thử nghiệm thăm dò vì hiện chưa có ground truth vật liệu mái/bề mặt độc lập.
+**Phần A — Pavia University:** dùng nhãn vật liệu/lớp phủ để kiểm tra bốn cấu hình bằng bài toán phân loại.
+
+**Phần B — Tanager + Landsat:** dùng cùng bốn cấu hình để dự đoán Landsat LST và phát hiện hotspot. LST là target chung cho cả M1–M4 trong phần này.
+
+Band selection được fit lại chỉ trên training set của từng fold để tránh dùng thông tin từ test set. M3 là bản triển khai thực dụng của ý tưởng RF-based band selection trong Le Bris et al.: Random Forest tạo relevance score, sau đó thuật toán greedy phạt các band tương quan cao để tránh chọn nhiều band gần như trùng nhau. Paper gốc dùng SFFS và genetic algorithm để tìm kiếm sâu hơn.
 """)
 
 md(r"""
 ## 0. Cấu hình
 
-Thông số pilot mặc định ưu tiên chạy được trên máy cá nhân. Để tạo kết quả cuối, tăng `PPI_PROJECTIONS` từ 2.000 lên 10.000 và có thể tăng `TRAIN_SAMPLES`.
+`QUICK_RUN=True` mặc định dùng ba spatial folds và mẫu nhỏ hơn để kiểm tra notebook trên máy cá nhân. Đổi thành `False` trước lần chạy lấy số liệu cuối; notebook sẽ dùng năm folds, 120.000 pixel tối đa và 10.000 PPI projections cho Tanager.
 """)
 
 code(r"""
@@ -48,10 +55,24 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import rasterio
 from rasterio.warp import reproject, Resampling
+from scipy.io import loadmat
 from sklearn.cluster import KMeans
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import (
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
 from sklearn.model_selection import GroupKFold
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, f1_score
+from sklearn.metrics import (
+    accuracy_score,
+    cohen_kappa_score,
+    confusion_matrix,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
 from skimage.segmentation import slic
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -64,6 +85,7 @@ if not (ROOT / "data").exists():
 TANAGER_DIR = ROOT / "data" / "tanager"
 LANDSAT_DIR = ROOT / "data" / "landsat"
 RSR_FILE = ROOT / "data" / "rsr" / "L8_OLI_RSR.xlsx"
+PAVIA_DIR = ROOT / "data" / "benchmark" / "pavia_university"
 OUT_DIR = ROOT / "outputs"
 OUT_DIR.mkdir(exist_ok=True)
 
@@ -71,24 +93,267 @@ H5_FILE = TANAGER_DIR / "20250407_035451_00_4001_ortho_sr_hdf5.h5"
 RGB_FILE = TANAGER_DIR / "20250407_035451_00_4001_ortho_visual.tif"
 UDM_FILE = TANAGER_DIR / "20250407_035451_00_4001_ortho_beta_udm.tif"
 STAC_FILE = TANAGER_DIR / "20250407_035451_00_4001.json"
+PAVIA_FILE = PAVIA_DIR / "PaviaU.mat"
+PAVIA_GT_FILE = PAVIA_DIR / "PaviaU_gt.mat"
 
+QUICK_RUN = True              # False cho kết quả cuối của report
 N_MNF = 16
 N_ENDMEMBERS = 7
-TRAIN_SAMPLES = 60_000
-NOISE_SAMPLES = 40_000
-PPI_SAMPLES = 20_000
-PPI_PROJECTIONS = 2_000       # đổi thành 10_000 cho lần chạy cuối
+N_SELECTED_BANDS = 10
+CV_FOLDS = 3 if QUICK_RUN else 5
+MODEL_ITERATIONS = 140 if QUICK_RUN else 250
+RF_SELECTOR_TREES = 60 if QUICK_RUN else 200
+TRAIN_SAMPLES = 30_000 if QUICK_RUN else 60_000
+NOISE_SAMPLES = 20_000 if QUICK_RUN else 40_000
+PPI_SAMPLES = 10_000 if QUICK_RUN else 20_000
+PPI_PROJECTIONS = 500 if QUICK_RUN else 10_000
+PAVIA_FIT_SAMPLES = 15_000 if QUICK_RUN else 30_000
+PAVIA_PPI_SAMPLES = 10_000 if QUICK_RUN else 20_000
+PAVIA_PPI_PROJECTIONS = 500 if QUICK_RUN else 2_000
 PURE_FRACTION = 0.005         # 0,5% pixel có PPI cao nhất
-FCLS_ITERATIONS = 60
+FCLS_ITERATIONS = 40 if QUICK_RUN else 80
 SPATIAL_BLOCK_M = 1_000
-MAX_BENCHMARK_PIXELS = 120_000
+MAX_BENCHMARK_PIXELS = 30_000 if QUICK_RUN else 120_000
 
-for p in [H5_FILE, RGB_FILE, UDM_FILE, STAC_FILE, RSR_FILE]:
+for p in [PAVIA_FILE, PAVIA_GT_FILE, H5_FILE, RGB_FILE, UDM_FILE, STAC_FILE, RSR_FILE]:
     assert p.exists(), f"Thiếu file: {p}"
 print("Project root:", ROOT)
+print("Mode:", "QUICK_RUN" if QUICK_RUN else "FINAL")
 """)
 
-md("## 1. Kiểm kê dữ liệu và lưới không gian")
+md(r"""
+## Phần A — Benchmark có nhãn: Pavia University
+
+Pavia University có 103 band VNIR và chín lớp đô thị. Benchmark này trả lời câu hỏi **HSI có phân biệt vật liệu/lớp phủ tốt hơn MSI không**. Nó không có thermal/LST, vì vậy LST chỉ xuất hiện ở Phần B.
+
+M1 được tạo trực tiếp từ Pavia HSI thành bốn band rộng blue–green–red–NIR cộng NDVI. M2 dùng 103 band. M3 chọn 10 band trong từng training fold. M4 dùng MNF/PPI/FCLS không giám sát rồi đưa các fractions cùng MNF và MSI vào cùng classifier.
+""")
+
+code(r"""
+PAVIA_LABELS = {
+    1: "Asphalt", 2: "Meadows", 3: "Gravel", 4: "Trees",
+    5: "Painted metal sheets", 6: "Bare soil", 7: "Bitumen",
+    8: "Self-blocking bricks", 9: "Shadows",
+}
+
+pavia_cube = loadmat(PAVIA_FILE)["paviaU"].astype(np.float32)
+pavia_gt = loadmat(PAVIA_GT_FILE)["paviaU_gt"].astype(np.uint8)
+pavia_wl = np.linspace(430.0, 860.0, pavia_cube.shape[2], dtype=np.float32)
+
+# Pavia thường được phân phối dưới dạng DN. Một scale chung giữ nguyên hình dạng phổ
+# và giúp bài toán unmixing ổn định số học; tree models không phụ thuộc scale này.
+pavia_scale = np.percentile(pavia_cube[pavia_gt > 0], 99.9)
+pavia_cube /= max(float(pavia_scale), 1.0)
+pr_all, pc_all = np.where(pavia_gt > 0)
+pavia_y = pavia_gt[pr_all, pc_all]
+pavia_X_full = pavia_cube[pr_all, pc_all, :]
+
+def mean_window(cube, wavelengths_nm, low, high):
+    idx = (wavelengths_nm >= low) & (wavelengths_nm <= high)
+    if not idx.any():
+        raise ValueError(f"Không có band trong cửa sổ {low}-{high} nm")
+    return cube[..., idx].mean(axis=-1)
+
+p_blue = mean_window(pavia_cube, pavia_wl, 450, 520)
+p_green = mean_window(pavia_cube, pavia_wl, 520, 600)
+p_red = mean_window(pavia_cube, pavia_wl, 630, 690)
+p_nir = mean_window(pavia_cube, pavia_wl, 760, 860)
+p_ndvi = (p_nir - p_red) / (p_nir + p_red + 1e-9)
+pavia_X_msi = np.column_stack([
+    p_blue[pr_all, pc_all], p_green[pr_all, pc_all],
+    p_red[pr_all, pc_all], p_nir[pr_all, pc_all], p_ndvi[pr_all, pc_all],
+]).astype(np.float32)
+
+print("Pavia cube:", pavia_cube.shape)
+print("Labeled pixels:", len(pavia_y))
+display(pd.Series({PAVIA_LABELS[k]: int((pavia_y == k).sum()) for k in PAVIA_LABELS}, name="pixels"))
+
+rgb_pavia = np.stack([p_red, p_green, p_blue], axis=-1)
+lo, hi = np.percentile(rgb_pavia, [2, 98], axis=(0, 1))
+rgb_pavia = np.clip((rgb_pavia - lo) / (hi - lo + 1e-9), 0, 1)
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+axes[0].imshow(rgb_pavia); axes[0].set_title("Pavia University — RGB giả lập"); axes[0].axis("off")
+axes[1].imshow(np.ma.masked_where(pavia_gt == 0, pavia_gt), cmap="tab10", vmin=0, vmax=9)
+axes[1].set_title("Ground truth — 9 lớp"); axes[1].axis("off")
+plt.tight_layout();
+""")
+
+md("### A1. Tạo MNF, PPI và FCLS features cho M4")
+
+code(r"""
+def fit_mnf_generic(X, differences, n_components):
+    X = np.asarray(X, np.float64)
+    differences = np.asarray(differences, np.float64)
+    mean = X.mean(axis=0)
+    noise_cov = np.cov(differences, rowvar=False) / 2
+    reg = max(np.trace(noise_cov) / noise_cov.shape[0] * 1e-5, 1e-10)
+    nv, ne = np.linalg.eigh(noise_cov + reg * np.eye(noise_cov.shape[0]))
+    whitener = (ne * (1 / np.sqrt(np.maximum(nv, reg)))) @ ne.T
+    Z = (X - mean) @ whitener
+    sv, se = np.linalg.eigh(np.cov(Z, rowvar=False))
+    order = np.argsort(sv)[::-1]
+    components = whitener @ se[:, order[:n_components]]
+    return mean, components, sv[order]
+
+def ppi_counts_generic(scores, n_projections=1000, batch=128, seed=42):
+    gen = np.random.default_rng(seed)
+    counts = np.zeros(len(scores), np.int32)
+    for start in range(0, n_projections, batch):
+        n = min(batch, n_projections - start)
+        directions = gen.normal(size=(scores.shape[1], n))
+        directions /= np.linalg.norm(directions, axis=0, keepdims=True)
+        projection = scores @ directions
+        np.add.at(counts, np.argmax(projection, axis=0), 1)
+        np.add.at(counts, np.argmin(projection, axis=0), 1)
+    return counts
+
+def project_simplex_generic(V):
+    U = np.sort(V, axis=1)[:, ::-1]
+    cssv = np.cumsum(U, axis=1) - 1
+    j = np.arange(1, V.shape[1] + 1)
+    rho = (U - cssv / j > 0).sum(axis=1) - 1
+    theta = cssv[np.arange(len(V)), rho] / (rho + 1)
+    return np.maximum(V - theta[:, None], 0)
+
+def fcls_batch(X, endmembers, iterations=60):
+    G = endmembers @ endmembers.T
+    C = X @ endmembers.T
+    step = 0.95 / np.linalg.norm(G, 2)
+    F = np.full((len(X), len(endmembers)), 1 / len(endmembers), np.float32)
+    for _ in range(iterations):
+        F = project_simplex_generic(F - step * (F @ G - C)).astype(np.float32)
+    return F
+
+pavia_rng = np.random.default_rng(42)
+fit_idx = pavia_rng.choice(len(pavia_X_full), min(PAVIA_FIT_SAMPLES, len(pavia_X_full)), replace=False)
+left = pavia_cube[:, :-1, :].reshape(-1, pavia_cube.shape[2])
+right = pavia_cube[:, 1:, :].reshape(-1, pavia_cube.shape[2])
+noise_idx = pavia_rng.choice(len(left), min(PAVIA_FIT_SAMPLES, len(left)), replace=False)
+pavia_noise = left[noise_idx] - right[noise_idx]
+
+pavia_mnf_mean, pavia_mnf_components, _ = fit_mnf_generic(
+    pavia_X_full[fit_idx], pavia_noise, min(N_MNF, pavia_X_full.shape[1])
+)
+pavia_X_mnf = ((pavia_X_full - pavia_mnf_mean) @ pavia_mnf_components).astype(np.float32)
+
+ppi_idx = pavia_rng.choice(len(pavia_X_full), min(PAVIA_PPI_SAMPLES, len(pavia_X_full)), replace=False)
+ppi_z = pavia_X_mnf[ppi_idx]
+ppi_z = (ppi_z - ppi_z.mean(0)) / (ppi_z.std(0) + 1e-9)
+ppi_count = ppi_counts_generic(ppi_z, n_projections=PAVIA_PPI_PROJECTIONS)
+n_pure = max(9 * 10, int(np.ceil(0.01 * len(ppi_idx))))
+pure_idx = ppi_idx[np.argsort(ppi_count)[-n_pure:]]
+em_model = KMeans(n_clusters=9, n_init=30, random_state=42).fit(pavia_X_mnf[pure_idx, :10])
+pavia_endmembers = np.vstack([
+    pavia_X_full[pure_idx][em_model.labels_ == k].mean(axis=0) for k in range(9)
+]).astype(np.float32)
+pavia_fractions = fcls_batch(pavia_X_full, pavia_endmembers, FCLS_ITERATIONS)
+pavia_X_unmix = np.column_stack([pavia_X_msi, pavia_X_mnf, pavia_fractions]).astype(np.float32)
+
+fig, ax = plt.subplots(figsize=(12, 5))
+for k, spectrum in enumerate(pavia_endmembers):
+    ax.plot(pavia_wl, spectrum, lw=1.2, label=f"E{k}")
+ax.set(xlabel="Wavelength (nm)", ylabel="Scaled signal", title="Pavia endmembers — PPI + K-means")
+ax.legend(ncol=3);
+""")
+
+md(r"""
+### A2. Spatial cross-validation cho bốn cấu hình
+
+Các block 32×32 pixel giữ các pixel lân cận trong cùng fold. M1, M2 và M4 dùng feature cố định. Với M3, Random Forest chỉ xem training fold, xếp hạng các band và chọn 10 band quan trọng nhất; classifier cuối vẫn giống ba cấu hình còn lại. `QUICK_RUN` dùng ba folds, chế độ final dùng năm folds.
+""")
+
+code(r"""
+PAVIA_BLOCK_PX = 32
+pavia_groups = (pr_all // PAVIA_BLOCK_PX) * (pavia_cube.shape[1] // PAVIA_BLOCK_PX + 1) + (pc_all // PAVIA_BLOCK_PX)
+
+def relevance_redundancy_subset(X_train, importances, k):
+    '''Greedy relevance/redundancy selection from the strongest RF candidates.'''
+    pool_size = min(X_train.shape[1], max(40, 5 * k))
+    candidates = np.argsort(importances)[-pool_size:][::-1]
+    corr = np.abs(np.corrcoef(X_train[:, candidates], rowvar=False))
+    corr = np.nan_to_num(corr, nan=1.0)
+    chosen_local = [0]
+    while len(chosen_local) < min(k, len(candidates)):
+        remaining = [i for i in range(len(candidates)) if i not in chosen_local]
+        redundancy = corr[np.ix_(remaining, chosen_local)].max(axis=1)
+        relevance = importances[candidates[remaining]]
+        score = relevance * (0.10 + 0.90 * (1 - redundancy))
+        chosen_local.append(remaining[int(np.argmax(score))])
+    return candidates[chosen_local]
+
+def rf_select_classification_bands(X_train, y_train, k, seed):
+    model = RandomForestClassifier(
+        n_estimators=RF_SELECTOR_TREES, max_features="sqrt", min_samples_leaf=2,
+        class_weight="balanced_subsample", n_jobs=-1, random_state=seed,
+    )
+    model.fit(X_train, y_train)
+    return relevance_redundancy_subset(X_train, model.feature_importances_, k)
+
+def run_pavia_cv(X, name, select_bands=False):
+    cv = GroupKFold(n_splits=CV_FOLDS)
+    records, chosen_rows = [], []
+    oof = np.zeros_like(pavia_y)
+    for fold, (tr, te) in enumerate(cv.split(X, pavia_y, pavia_groups), 1):
+        Xtr, Xte = X[tr], X[te]
+        if select_bands:
+            selected = rf_select_classification_bands(Xtr, pavia_y[tr], N_SELECTED_BANDS, 100 + fold)
+            Xtr, Xte = Xtr[:, selected], Xte[:, selected]
+            chosen_rows.extend({"fold": fold, "band_index": int(i), "wavelength_nm": float(pavia_wl[i])} for i in selected)
+        model = HistGradientBoostingClassifier(
+            max_iter=MODEL_ITERATIONS, learning_rate=.07, max_leaf_nodes=31,
+            l2_regularization=1, random_state=42,
+        )
+        model.fit(Xtr, pavia_y[tr])
+        pred = model.predict(Xte)
+        oof[te] = pred
+        records.append({
+            "method": name, "fold": fold,
+            "accuracy": accuracy_score(pavia_y[te], pred),
+            "macro_F1": f1_score(pavia_y[te], pred, labels=list(PAVIA_LABELS), average="macro", zero_division=0),
+            "kappa": cohen_kappa_score(pavia_y[te], pred),
+        })
+    return pd.DataFrame(records), oof, pd.DataFrame(chosen_rows)
+
+pavia_methods = {
+    "M1_MSI": pavia_X_msi,
+    "M2_Full_HSI": pavia_X_full,
+    "M4_HSI_Unmixing": pavia_X_unmix,
+}
+pavia_metric_parts, pavia_oof = [], {}
+for name, X in pavia_methods.items():
+    result, pred, _ = run_pavia_cv(X, name)
+    pavia_metric_parts.append(result); pavia_oof[name] = pred
+
+result, pred, pavia_selected = run_pavia_cv(pavia_X_full, "M3_Selected_HSI", select_bands=True)
+pavia_metric_parts.append(result); pavia_oof["M3_Selected_HSI"] = pred
+pavia_metrics = pd.concat(pavia_metric_parts, ignore_index=True)
+pavia_summary = pavia_metrics.groupby("method")[["accuracy", "macro_F1", "kappa"]].agg(["mean", "std"])
+display(pavia_summary.round(3))
+
+pavia_metrics.to_csv(OUT_DIR / "pavia_four_method_metrics.csv", index=False)
+pavia_selected.to_csv(OUT_DIR / "pavia_selected_bands.csv", index=False)
+
+fig, axes = plt.subplots(2, 2, figsize=(13, 11))
+for ax, (name, pred) in zip(axes.ravel(), pavia_oof.items()):
+    cm = confusion_matrix(pavia_y, pred, labels=list(PAVIA_LABELS), normalize="true")
+    im = ax.imshow(cm, vmin=0, vmax=1, cmap="Blues")
+    ax.set_title(name); ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+    ax.set_xticks(range(9)); ax.set_yticks(range(9));
+    ax.set_xticklabels(range(1, 10)); ax.set_yticklabels(range(1, 10))
+fig.colorbar(im, ax=axes.ravel().tolist(), shrink=.65, label="Row-normalized rate")
+plt.show();
+
+display(
+    pavia_selected.groupby("band_index")
+    .agg(wavelength_nm=("wavelength_nm", "first"), selected_folds=("fold", "nunique"))
+    .sort_values(["selected_folds", "wavelength_nm"], ascending=[False, True])
+    .head(20)
+)
+""")
+
+md("## Phần B — Tanager HSI và Landsat LST")
+
+md("### B1. Kiểm kê dữ liệu và lưới không gian")
 
 code(r"""
 inventory = []
@@ -116,7 +381,7 @@ plt.axis("off");
 """)
 
 md(r"""
-## 2. Đọc hyperspectral và tạo quality mask
+### B2. Đọc hyperspectral và tạo quality mask
 
 Giữ các band được nhà sản xuất đánh dấu tốt trong ba cửa sổ: `400–1340`, `1490–1770`, `2050–2450 nm`. Các vùng hấp thụ khí quyển quanh 1.4 và 1.9 µm bị loại.
 """)
@@ -176,7 +441,7 @@ ax.legend();
 """)
 
 md(r"""
-## 3. Giả lập Landsat OLI từ Tanager
+### B3. Tạo M1 — Landsat OLI giả lập từ Tanager
 
 RSR lấy từ USGS. Mỗi band được tính bằng tích phân có trọng số trên đúng các bước sóng Tanager. Ta dùng B2–B7 vì chúng nằm trong miền phổ của Tanager và phục vụ NDVI/NDBI/MNDWI.
 """)
@@ -219,7 +484,7 @@ plt.tight_layout();
 """)
 
 md(r"""
-## 4. MNF: noise whitening + PCA
+### B4. MNF: noise whitening + PCA
 
 Noise được ước lượng từ sai phân hai pixel kề nhau. Sau whitening theo covariance của noise, PCA được chạy trên mẫu 60.000 pixel. Giữ 16 thành phần đầu.
 """)
@@ -268,7 +533,7 @@ plt.tight_layout();
 """)
 
 md(r"""
-## 5. PPI, endmember và kiểm tra phổ
+### B5. PPI, endmember và kiểm tra phổ
 
 PPI chiếu mẫu MNF theo các hướng ngẫu nhiên, đếm số lần mỗi pixel nằm ở cực đại/cực tiểu. Top 0,5% được gom thành 7 endmember bằng K-means. Vì chưa có ground truth vật liệu, notebook gọi chúng là `E0…E6`; bảng chỉ số hỗ trợ đặt tên sau khi xem ảnh và phổ.
 """)
@@ -322,7 +587,7 @@ display(em_table.round(3).sort_values("NDVI"))
 """)
 
 md(r"""
-## 6. FCLS và SAM
+### B6. FCLS và SAM
 
 FCLS dùng projected gradient descent trên simplex: mọi fraction không âm và tổng bằng 1. SAM tạo lớp cứng bổ trợ. Kết quả gồm fraction, reconstruction RMSE, nhãn SAM và spectral angle nhỏ nhất.
 """)
@@ -373,7 +638,7 @@ plt.tight_layout();
 """)
 
 md(r"""
-## 7. Baseline bốn lớp kiểu Brazil và object segmentation
+### B7. Baseline bốn lớp kiểu Brazil và object segmentation
 
 SLIC tạo khoảng 1.200 object từ MSI-sim. Mỗi object được gán một trong bốn lớp: water, vegetation, urban, low-density/bare bằng trung bình NDVI/NDBI/MNDWI. Đây là baseline không giám sát; cần polygon độc lập nếu muốn báo cáo accuracy phân loại.
 """)
@@ -401,7 +666,7 @@ display(pd.Series({CLASS_NAMES[k]:int((classes==k).sum()) for k in CLASS_NAMES},
 """)
 
 md(r"""
-## 8. Landsat LST: QA, scale và đồng đăng ký
+### B8. Landsat LST: QA, scale và đồng đăng ký
 
 `QA_PIXEL` loại fill, dilated cloud, cirrus, cloud, cloud shadow và snow. `QA_RADSAT` loại pixel bão hòa. Công thức Collection 2 Level-2: `K = DN × 0.00341802 + 149`; sau đó đổi sang °C. Hai rows được warp trực tiếp về lưới Tanager và lấy trung bình nơi chồng lấn.
 """)
@@ -441,7 +706,7 @@ fig,ax=plt.subplots(figsize=(10,8)); lo,hi=np.nanpercentile(lst_c,[2,98]); im=ax
 ax.set_title("Landsat 8 LST (°C) — 2025-04-09"); ax.axis("off"); plt.colorbar(im,ax=ax,shrink=.75,label="°C");
 """)
 
-md("## 9. Chỉ số UHI theo pipeline Brazil")
+md("### B9. Chỉ số UHI theo pipeline Brazil")
 
 code(r"""
 uhi_rows=[]
@@ -462,14 +727,16 @@ delta_lst=lst_c-veg_mean
 """)
 
 md(r"""
-## 10. Benchmark dự báo nhiệt với spatial cross-validation
+### B10. Bốn phương pháp dự báo LST với spatial cross-validation
 
-- **MSI:** 6 band OLI giả lập + NDVI/NDBI/MNDWI.
-- **MSI+HSI:** toàn bộ MSI features + 16 MNF + 7 material fractions.
-- Chia block 1 km, 5 folds; cùng mô hình `HistGradientBoostingRegressor`.
-- Metrics: R², RMSE, MAE và F1 phát hiện 10% pixel nóng nhất.
+Tất cả phương pháp dùng **cùng Landsat LST target**, cùng tập pixel, block không gian 1 km và cùng `HistGradientBoostingRegressor`. `QUICK_RUN` dùng tối đa 30.000 pixel và ba folds; chế độ final dùng tối đa 120.000 pixel và năm folds.
 
-So sánh MSI với MSI+HSI đo trực tiếp phần thông tin tăng thêm từ phổ hẹp.
+- **M1 — MSI:** sáu band OLI giả lập + NDVI/NDBI/MNDWI.
+- **M2 — Full HSI:** toàn bộ band Tanager hợp lệ.
+- **M3 — Selected HSI:** 10 band do Random Forest regression chọn riêng trong training fold.
+- **M4 — HSI unmixing:** M1 + 16 MNF components + 7 FCLS fractions.
+
+Metrics gồm R², RMSE, MAE và F1 phát hiện 10% pixel nóng nhất. Vì M3 chọn band bên trong từng fold, test fold không tham gia band selection.
 """)
 
 code(r"""
@@ -478,45 +745,77 @@ if len(rows)>MAX_BENCHMARK_PIXELS:
     keep=rng.choice(len(rows),MAX_BENCHMARK_PIXELS,replace=False); rows,cols=rows[keep],cols[keep]
 y=lst_c[rows,cols]
 X_msi=np.column_stack([msi[:,rows,cols].T,ndvi[rows,cols],ndbi[rows,cols],mndwi[rows,cols]])
-X_hsi=np.column_stack([X_msi,mnf_map[:,rows,cols].T,fractions[:,rows,cols].T])
-ok=np.isfinite(X_hsi).all(axis=1)&np.isfinite(y)
-rows,cols,y,X_msi,X_hsi=rows[ok],cols[ok],y[ok],X_msi[ok],X_hsi[ok]
+X_full_hsi=cube[:,rows,cols].T
+X_unmix=np.column_stack([X_msi,mnf_map[:,rows,cols].T,fractions[:,rows,cols].T])
+ok=(np.isfinite(X_msi).all(axis=1) & np.isfinite(X_full_hsi).all(axis=1) &
+    np.isfinite(X_unmix).all(axis=1) & np.isfinite(y))
+rows,cols,y=rows[ok],cols[ok],y[ok]
+X_msi,X_full_hsi,X_unmix=X_msi[ok],X_full_hsi[ok],X_unmix[ok]
 block_px=max(1,round(SPATIAL_BLOCK_M/abs(target_transform.a)))
 groups=(rows//block_px)*(width//block_px+1)+(cols//block_px)
 print("Samples:",len(y),"| spatial groups:",len(np.unique(groups)),"| block pixels:",block_px)
 
-def run_cv(X,name):
-    records=[]; cv=GroupKFold(n_splits=5)
+def rf_select_regression_bands(X_train, y_train, k, seed):
+    model=RandomForestRegressor(
+        n_estimators=RF_SELECTOR_TREES,max_features="sqrt",min_samples_leaf=3,
+        max_samples=.7,n_jobs=-1,random_state=seed,
+    )
+    model.fit(X_train,y_train)
+    return relevance_redundancy_subset(X_train,model.feature_importances_,k)
+
+def run_cv(X,name,select_bands=False):
+    records=[]; selected_rows=[]; cv=GroupKFold(n_splits=CV_FOLDS)
     for fold,(tr,te) in enumerate(cv.split(X,y,groups),1):
-        model=HistGradientBoostingRegressor(max_iter=250,learning_rate=.06,max_leaf_nodes=31,l2_regularization=1,random_state=42)
-        model.fit(X[tr],y[tr]); pred=model.predict(X[te])
+        Xtr,Xte=X[tr],X[te]
+        if select_bands:
+            selected=rf_select_regression_bands(Xtr,y[tr],N_SELECTED_BANDS,200+fold)
+            Xtr,Xte=Xtr[:,selected],Xte[:,selected]
+            selected_rows.extend({"fold":fold,"band_index":int(i),"wavelength_nm":float(wl[i])} for i in selected)
+        model=HistGradientBoostingRegressor(max_iter=MODEL_ITERATIONS,learning_rate=.06,max_leaf_nodes=31,l2_regularization=1,random_state=42)
+        model.fit(Xtr,y[tr]); pred=model.predict(Xte)
         threshold=np.quantile(y[tr],.90)
         records.append({"features":name,"fold":fold,"R2":r2_score(y[te],pred),
                         "RMSE_C":mean_squared_error(y[te],pred)**.5,
                         "MAE_C":mean_absolute_error(y[te],pred),
                         "Hotspot_F1":f1_score(y[te]>=threshold,pred>=threshold)})
-    return pd.DataFrame(records)
+    return pd.DataFrame(records),pd.DataFrame(selected_rows)
 
-metrics=pd.concat([run_cv(X_msi,"MSI"),run_cv(X_hsi,"MSI+HSI")],ignore_index=True)
+metric_parts=[]
+for X,name in [
+    (X_msi,"M1_MSI"),
+    (X_full_hsi,"M2_Full_HSI"),
+    (X_unmix,"M4_HSI_Unmixing"),
+]:
+    result,_=run_cv(X,name); metric_parts.append(result)
+result,tanager_selected=run_cv(X_full_hsi,"M3_Selected_HSI",select_bands=True)
+metric_parts.append(result)
+metrics=pd.concat(metric_parts,ignore_index=True)
 display(metrics.groupby("features").agg(["mean","std"]).round(3))
 metrics.to_csv(OUT_DIR/"spatial_cv_metrics.csv",index=False)
+tanager_selected.to_csv(OUT_DIR/"tanager_selected_bands.csv",index=False)
 """)
 
 code(r"""
 summary_metrics=metrics.groupby("features")[["R2","RMSE_C","MAE_C","Hotspot_F1"]].mean()
-delta=pd.Series({
-    "Delta_R2":summary_metrics.loc["MSI+HSI","R2"]-summary_metrics.loc["MSI","R2"],
-    "RMSE_reduction_C":summary_metrics.loc["MSI","RMSE_C"]-summary_metrics.loc["MSI+HSI","RMSE_C"],
-    "Delta_hotspot_F1":summary_metrics.loc["MSI+HSI","Hotspot_F1"]-summary_metrics.loc["MSI","Hotspot_F1"],
-})
-display(delta.round(3))
+comparison=summary_metrics.copy()
+for metric in ["R2","Hotspot_F1"]:
+    comparison[f"Delta_{metric}_vs_M1"]=comparison[metric]-comparison.loc["M1_MSI",metric]
+comparison["RMSE_reduction_vs_M1_C"]=summary_metrics.loc["M1_MSI","RMSE_C"]-comparison["RMSE_C"]
+display(comparison.round(3))
 
-ax=summary_metrics[["RMSE_C","MAE_C"]].plot.bar(figsize=(8,4),rot=0,title="Spatial CV error")
+ax=summary_metrics[["RMSE_C","MAE_C"]].plot.bar(figsize=(10,4),rot=15,title="Four-method spatial CV error")
 ax.set_ylabel("°C"); plt.tight_layout();
+
+display(
+    tanager_selected.groupby("band_index")
+    .agg(wavelength_nm=("wavelength_nm","first"),selected_folds=("fold","nunique"))
+    .sort_values(["selected_folds","wavelength_nm"],ascending=[False,True])
+    .head(25)
+)
 """)
 
 md(r"""
-## 11. Xuất raster và bảng kết quả
+### B11. Xuất raster và bảng kết quả
 
 Các raster giữ đúng `EPSG:32648`, transform và kích thước của Tanager. Tệp float dùng `NaN` làm nodata; lớp dùng 255.
 """)
@@ -549,11 +848,14 @@ for p in sorted(OUT_DIR.iterdir()): print(" -",p.name)
 """)
 
 md(r"""
-## Cách diễn giải kết quả
+## Cách diễn giải kết quả chung
 
-Kết luận chính dựa trên `Delta_R2`, `RMSE_reduction_C` và `Delta_hotspot_F1`. Nếu MSI+HSI tốt hơn ổn định qua các fold không gian, phổ hẹp mang thông tin bổ sung cho bề mặt nóng. Bản đồ fraction và bảng endmember giúp đặt giả thuyết về asphalt, bê tông, mái kim loại, đất và thực vật; chưa nên báo cáo accuracy vật liệu cho tới khi có polygon kiểm định độc lập.
+1. Dùng Pavia để kết luận phương pháp nào phân biệt vật liệu/lớp phủ tốt hơn qua accuracy, macro-F1 và Kappa.
+2. Dùng Tanager–Landsat để kết luận phương pháp nào dự đoán LST và hotspot tốt hơn qua R², RMSE, MAE và hotspot F1.
+3. M3 cho biết có thể giữ bao nhiêu lợi ích của HSI với chỉ 10 band. Tần suất band được chọn qua năm folds cho biết kết quả có ổn định hay không.
+4. M4 cho biết MNF và abundance fractions có cung cấp tín hiệu dễ giải thích hơn phổ thô hay không.
 
-LST lệch Tanager hai ngày. Phân tích phù hợp cho bề mặt ổn định và proof-of-concept; một nghiên cứu đầy đủ cần thêm nhiều ngày, dữ liệu khí tượng và ground truth vật liệu.
+Không chuyển classifier Pavia trực tiếp sang Tanager. Ta chuyển **experiment protocol** và bốn cách tạo feature; model được fit lại cho target tương ứng. Pavia không có LST, còn Tanager không có nhãn vật liệu. LST Landsat lệch Tanager hai ngày, nên phần B là proof-of-concept và chưa loại bỏ hoàn toàn ảnh hưởng thời tiết/thời gian.
 """)
 
 nb["cells"] = cells

@@ -1,9 +1,14 @@
-# HSI Lab — benchmark hyperspectral và multispectral cho UHI
+# HSI Lab — bốn phương pháp hyperspectral/multispectral cho UHI
 
 Mở `notebook/01_tanager_hsi_vs_landsat_uhi.ipynb` trong VS Code và chọn kernel
-`Python (.venv HSI Lab)`. Notebook bao gồm kiểm tra dữ liệu, mask chất lượng,
-giả lập Landsat OLI bằng RSR chính thức, MNF, PPI, endmember, FCLS, SAM,
-pipeline bốn lớp kiểu Brazil, Landsat LST và spatial cross-validation.
+`Python (.venv HSI Lab)`, sau đó chọn **Run All**. Notebook chạy hai phần:
+
+1. Pavia University có nhãn: so sánh M1 MSI, M2 Full HSI, M3 Selected HSI và
+   M4 HSI unmixing cho phân loại vật liệu/lớp phủ.
+2. Tanager + Landsat: chạy lại bốn cấu hình với Landsat LST làm target chung,
+   rồi so sánh R², RMSE, MAE và hotspot F1 bằng spatial cross-validation.
+
+Pipeline Brazil được giữ để tính và diễn giải LST/UHI theo lớp bề mặt.
 
 Môi trường Python nằm trong `.venv`. Nếu cần tạo lại:
 
@@ -18,3 +23,14 @@ Dữ liệu Landsat có thể tải lại hoặc tiếp tục bằng:
 .venv/bin/python scripts/download_landsat.py
 ```
 
+Pavia University có thể tải lại bằng:
+
+```bash
+.venv/bin/python scripts/download_pavia.py
+```
+
+Tạo lại notebook sau khi sửa builder:
+
+```bash
+.venv/bin/python scripts/build_notebook.py
+```
