@@ -3,13 +3,14 @@
 Mở `notebook/01_tanager_hsi_vs_landsat_uhi.ipynb` trong VS Code và chọn kernel
 `Python (.venv HSI Lab)`, sau đó chọn **Run All**. Notebook chạy hai phần:
 
-1. Pavia University có nhãn: so sánh M1 MSI, M2 Full HSI và M3 HSI unmixing
-   cho phân loại vật liệu/lớp phủ.
+1. Pavia University có nhãn: so sánh M1 Multispectral Baseline, M2
+   Full-Spectrum Hyperspectral và M3 Hyperspectral Unmixing Features cho phân
+   loại vật liệu/lớp phủ.
 2. Tanager + Landsat: chạy lại ba cấu hình với Landsat LST làm target chung,
    rồi so sánh R², RMSE, MAE và hotspot F1 bằng spatial cross-validation.
 
-Paper Brazil chỉ được dùng để tham khảo cách tính và diễn giải LST/UHI. Notebook
-không chạy SLIC hoặc quy trình phân lớp bốn bề mặt của paper đó.
+Module nhiệt tính LST anomaly so với vegetation reference và xác định hotspot
+theo phân vị P90 của LST hợp lệ.
 
 Môi trường Python nằm trong `.venv`. Nếu cần tạo lại:
 

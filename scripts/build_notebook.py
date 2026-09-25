@@ -27,15 +27,15 @@ Notebook có hai thí nghiệm nối tiếp nhau và dùng cùng ba cách biểu
 
 | Mã | Cấu hình | Ý nghĩa |
 |---|---|---|
-| **M1** | MSI baseline | band rộng và chỉ số phổ |
-| **M2** | Full HSI | toàn bộ band HSI hợp lệ |
-| **M3** | HSI unmixing | MSI + MNF components + FCLS abundance fractions |
+| **M1** | Multispectral Baseline | band rộng và chỉ số phổ |
+| **M2** | Full-Spectrum Hyperspectral | toàn bộ band HSI hợp lệ |
+| **M3** | Hyperspectral Unmixing Features | MSI + MNF components + FCLS abundance fractions |
 
 **Phần A — Pavia University:** dùng nhãn vật liệu/lớp phủ để kiểm tra ba cấu hình bằng bài toán phân loại.
 
 **Phần B — Tanager + Landsat:** dùng cùng ba cấu hình để dự đoán Landsat LST và phát hiện hotspot. LST là target chung cho cả M1–M3 trong phần này.
 
-Paper Brazil chỉ cung cấp cách tính và diễn giải LST/UHI. Notebook không tái lập object segmentation hay quy trình phân lớp bốn bề mặt của paper đó.
+Phần nhiệt sử dụng một module đánh giá độc lập: tính LST anomaly so với bề mặt thực vật tham chiếu và xác định hotspot theo phân vị nhiệt độ.
 """)
 
 md(r"""
@@ -633,9 +633,9 @@ ax.set_title("Landsat 8 LST (°C) — 2025-04-09"); ax.axis("off"); plt.colorbar
 """)
 
 md(r"""
-### B8. Chỉ số UHI tham khảo từ paper Brazil
+### B8. Reference-based LST anomaly and hotspot assessment
 
-Notebook chỉ giữ logic tính và diễn giải nhiệt: dùng pixel thực vật có `NDVI ≥ 0.35` làm bề mặt tham chiếu, sau đó tính `ΔLST = LST − mean(LST vegetation)`. Không chạy SLIC và không phân lớp water/vegetation/urban/bare theo pipeline Brazil.
+Dùng pixel thực vật có `NDVI ≥ 0.35` và `MNDWI < 0.1` làm tập tham chiếu. Chỉ số nhiệt tại mỗi pixel là `ΔLST = LST − mean(LST vegetation reference)`; hotspot quan sát được định nghĩa bằng phân vị P90 của LST hợp lệ.
 """)
 
 code(r"""
@@ -664,9 +664,9 @@ md(r"""
 
 Tất cả phương pháp dùng **cùng Landsat LST target**, cùng tập pixel, block không gian 1 km và cùng `HistGradientBoostingRegressor`. `QUICK_RUN` dùng tối đa 30.000 pixel và ba folds; chế độ final dùng tối đa 120.000 pixel và năm folds.
 
-- **M1 — MSI:** sáu band OLI giả lập + NDVI/NDBI/MNDWI.
-- **M2 — Full HSI:** toàn bộ band Tanager hợp lệ.
-- **M3 — HSI unmixing:** M1 + 16 MNF components + 7 FCLS fractions.
+- **M1 — Multispectral Baseline:** sáu band OLI giả lập + NDVI/NDBI/MNDWI.
+- **M2 — Full-Spectrum Hyperspectral:** toàn bộ band Tanager hợp lệ.
+- **M3 — Hyperspectral Unmixing Features:** M1 + 16 MNF components + 7 FCLS fractions.
 
 Metrics gồm R², RMSE, MAE và F1 phát hiện 10% pixel nóng nhất.
 """)
